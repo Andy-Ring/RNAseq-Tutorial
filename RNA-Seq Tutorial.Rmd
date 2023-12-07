@@ -1,0 +1,238 @@
+---
+title: "RNA-Seq Tutorial"
+author: "Andrew Ring"
+date: "2023-12-05"
+output: word_document
+---
+
+```{r}
+library(DESeq2)
+library(tidyverse)
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+library(pheatmap)
+library(viridis)
+library(ggprism)
+library(ggrepel)
+library(EnhancedVolcano)
+```
+
+
+```{r}
+data <- read.csv(file = "Tutorial_Counts.csv", header = T, row.names = 1) #Load the count data with headers and geneid as row names
+meta <- read.csv("Tutorial_Meta.csv", header = T) #load the column data file for Deseq2 with headers
+```
+
+
+
+```{r}
+row.names(data)<- substr(row.names(data), 1, 15) #Removes GeneID Version number from row names
+```
+
+
+
+```{r}
+data <- data[!duplicated(row.names(data)),] #Removing any duplicated genes
+data[is.na(data)] <- 0 #Removing any N/A values
+```
+
+
+
+
+```{r}
+meta$Sample <- as.factor(meta$Sample)  # Changing metadata to factors
+meta$Condition <- as.factor(meta$Condition)
+```
+
+
+
+
+```{r}
+mat_data <- as.matrix(data) # This changes the data frame of counts to a data matrix which is required for DEseq2
+```
+
+
+
+
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = mat_data,  # Creating the DeseqDataSet
+                              colData = meta, 
+                              design = ~ Condition)
+```
+
+
+
+
+```{r}
+dds <- DESeq(dds)  #Running Deseq on DeseqDataSet
+```
+
+
+
+
+```{r}
+vsd <- vst(dds) #Applying VST to prepare data for PCA
+```
+
+
+
+```{r}
+plotPCA(vsd, intgroup = c("Condition")) #Plotting a basic PCA with VST data
+```
+
+
+
+```{r}
+pcaData <- plotPCA(vsd, intgroup=c("Condition"), returnData=TRUE)    # Plotting a editable ggplot PCA and saving it using ggsave
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+
+
+
+ggplot(pcaData, aes(PC1, PC2, color=Condition, label = meta$Sample)) +
+  geom_point(size=3) +
+  geom_label_repel()+
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  coord_fixed()
+
+ggsave("PCA of RNA-Seq Samples.png", dpi = 1200)
+```
+
+
+```{r}
+results <- results(dds, contrast = c("Condition", "Disease", "Control"))  # Extracting results from dds object
+
+head(results)
+```
+
+
+
+
+```{r}
+anno <- AnnotationDbi::select(org.Hs.eg.db, rownames(results),            # Creating a gene ID key
+                              columns = c("ENSEMBL", "ENTREZID", "SYMBOL", "GENENAME"),
+                              keytype = "ENSEMBL")
+results = cbind(ENSEMBL = rownames(results), results)      # Moving ENSEMBL gene ids to new column in results 
+anno_results <- left_join(as.data.frame(results), anno)   # Joining Gene ID Key and results data frame 
+head(anno_results)
+```
+
+
+
+```{r}
+results_sig <- anno_results %>%         # Filtering our anno_results data frame to get our significant differentially expressed genes
+  filter(padj < 0.05, abs(log2FoldChange) > 0.585)
+```
+
+
+
+```{r}
+write.csv(results_sig, "RNA-Seq Tutorial Significant Genes.csv")  #Saving csv of differentially expressed genes
+```
+
+
+VOLCANO PLOT
+
+```{r}
+top_genes <- head(results_sig[order(results_sig$padj), ], 10)  #Extracting top 10 significantly differentially expressed genes
+gene_labs <- top_genes$SYMBOL  # Creating a list of their gene symbols
+```
+
+
+```{r}
+EnhancedVolcano(anno_results, x = "log2FoldChange", 
+                y = "padj", 
+                lab = anno_results$SYMBOL, 
+                selectLab  = c(gene_labs), 
+                FCcutoff = 0.585, 
+                pCutoff = 0.05, 
+                legendPosition = "none", 
+                title = "", 
+                drawConnectors = T, 
+                xlim = c(-3,3), 
+                ylim = c(0, -log10(10e-43)), 
+                labSize = 5.0, 
+                pointSize = 2.0, 
+                boxedLabels = TRUE)
+
+ggsave("RNA-Seq Tutorial Volcano Plot.png", dpi = 1200, height = 12, width = 8)
+```
+
+HEATMAP
+
+```{r}
+heatmap_meta <- read.csv("Tutorial_meta.csv", row.names = 1)
+```
+
+
+```{r}
+results_sig <- results_sig[!duplicated(results_sig$ENSEMBL),]
+```
+
+
+```{r}
+row.names(results_sig)<- results_sig$ENSEMBL
+```
+
+
+```{r}
+mat <- counts(dds, normalized = T)[rownames(results_sig),]
+```
+
+
+```{r}
+mat.z <- t(apply(mat, 1, scale))
+colnames(mat.z) <- colnames(mat)
+```
+
+
+
+```{r}
+pheatmap(mat.z, 
+         show_rownames = F, 
+         show_colnames = T, 
+         annotation_col = heatmap_meta, 
+         annotation_names_row = T, 
+         color = viridis_pal(direction = 1, option = "D")(100), 
+         filename = "RNA-Seq Tutorial Heatmap.png")
+```
+
+
+INDIVIDUAL GENES
+
+```{r}
+df <- data.frame(
+  Control = "Control",
+  Disease = "Disease",
+  label = "adjP = 2.7E-22",
+  y.position = 20000
+)
+```
+
+
+```{r}
+a <- plotCounts(dds, gene="ENSG00000101605", intgroup="Condition", 
+                returnData=TRUE)
+
+ggplot(a, aes(x=Condition, y=count)) + 
+  geom_boxplot(aes(fill=Condition))+
+  geom_jitter(color="black", size=3, alpha=0.9) +
+    ggtitle("MyoM1 Expression") +
+    xlab("")+
+  ylab("Count")+
+  ylim(c(0,22000))+
+  add_pvalue(df, xmin = "Control", xmax = "Disease", label = "label", y.position = 20000,label.size = 8)
+ggsave("Myom1 Expression.png", dpi=1200)
+```
+
+
+
+
+
+
+
+
+
+
+
+
